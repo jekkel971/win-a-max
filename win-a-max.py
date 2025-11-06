@@ -9,7 +9,7 @@ st.set_page_config(page_title="Analyse football API robuste", layout="wide")
 st.title("⚽ Analyse des matchs avec API (robuste)")
 
 # ---------------- CONFIG API ----------------
-API_KEY = "8b95c22ea5fe5a230b130b83e21a7535"  # Remplace par ta vraie clé
+API_KEY = "94ab52893fe364d9bf5362dc7b752213"  # Remplace par ta vraie clé
 SPORTS = {
     "Ligue 1": "soccer_fra_ligue_one",
     "Premier League": "soccer_eng_premier_league",
@@ -138,3 +138,4 @@ for league, sport_key in SPORTS.items():
         mises.append(round(f_star*budget_total,2))
     df_matches["Mise conseillée (€)"] = mises
     st.dataframe(df_matches[["home_team","away_team","Winner","prob_home","prob_away","Mise conseillée (€)"]])
+
