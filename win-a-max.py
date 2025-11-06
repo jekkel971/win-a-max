@@ -9,7 +9,7 @@ st.set_page_config(page_title="Analyse interactive football", layout="wide")
 st.title("⚽ Analyse interactive des matchs du week-end")
 
 # ---------------- CONFIG API ----------------
-API_KEY = "TON_API_KEY_ICI"  # Remplace par ta clé The Odds API
+API_KEY = "94ab52893fe364d9bf5362dc7b752213"  # Remplace par ta clé The Odds API
 SPORTS = {
     "Ligue 1": "soccer_fra_ligue_one",
     "Premier League": "soccer_eng_premier_league",
@@ -122,3 +122,4 @@ for league, sport_key in SPORTS.items():
         mises.append(round(f_star*budget_total,2))
     df_matches["Mise conseillée (€)"] = mises
     st.dataframe(df_matches[["home_team","away_team","Winner","prob_home","prob_away","Mise conseillée (€)"]])
+
