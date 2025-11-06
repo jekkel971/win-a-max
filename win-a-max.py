@@ -1,80 +1,124 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
+import requests
+import json
+import os
 
-st.set_page_config(page_title="Analyse auto football-data", layout="wide")
-st.title("⚽ Analyse automatique des championnats (Ligue 1, Premier League, La Liga)")
+st.set_page_config(page_title="Analyse interactive football", layout="wide")
+st.title("⚽ Analyse interactive des matchs du week-end")
 
-# URLs officielles football-data.co.uk (saison 2024–25)
-urls = {
-    "Ligue 1": "https://www.football-data.co.uk/mmz4281/2425/F1.csv",
-    "Premier League": "https://www.football-data.co.uk/mmz4281/2425/E0.csv",
-    "La Liga": "https://www.football-data.co.uk/mmz4281/2425/SP1.csv"
+# ---------------- CONFIG API ----------------
+API_KEY = "TON_API_KEY_ICI"  # Remplace par ta clé The Odds API
+SPORTS = {
+    "Ligue 1": "soccer_fra_ligue_one",
+    "Premier League": "soccer_eng_premier_league",
+    "La Liga": "soccer_spain_la_liga"
 }
 
-@st.cache_data
-def load_data():
-    data = {}
-    for league, url in urls.items():
-        try:
-            df = pd.read_csv(url)
-            df = df.rename(columns={
-                "HomeTeam": "home_team",
-                "AwayTeam": "away_team",
-                "FTHG": "home_goals",
-                "FTAG": "away_goals",
-                "FTR": "result",
-                "B365H": "cote_home",
-                "B365D": "cote_draw",
-                "B365A": "cote_away"
-            })
-            df["league"] = league
-            df = df.dropna(subset=["cote_home", "cote_away"])
-            data[league] = df
-        except Exception as e:
-            st.warning(f"⚠️ Erreur chargement {league}: {e}")
-    return data
+# ---------------- STOCKAGE DES FORMES ----------------
+FORM_FILE = "teams_form.json"
+if os.path.exists(FORM_FILE):
+    with open(FORM_FILE, "r") as f:
+        teams_form = json.load(f)
+else:
+    teams_form = {league: {} for league in SPORTS.keys()}
 
-data = load_data()
+# ---------------- FONCTION POUR CHARGER MATCHS ----------------
+@st.cache_data(ttl=600)
+def get_upcoming_matches(sport_key):
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?regions=eu&markets=h2h&apiKey={API_KEY}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        matches = []
+        for game in data:
+            if "bookmakers" in game and len(game["bookmakers"]) > 0:
+                b365 = next((b for b in game["bookmakers"] if b["key"] == "bet365"), None)
+                if b365:
+                    odds = b365["markets"][0]["outcomes"]
+                    home_odds = next((o["price"] for o in odds if o["name"] == game["home_team"]), None)
+                    away_odds = next((o["price"] for o in odds if o["name"] == game["away_team"]), None)
+                    matches.append({
+                        "home_team": game["home_team"],
+                        "away_team": game["away_team"],
+                        "cote_home": home_odds,
+                        "cote_away": away_odds
+                    })
+        return pd.DataFrame(matches)
+    except Exception as e:
+        st.error(f"Erreur API : {e}")
+        return pd.DataFrame()
 
-if not data:
-    st.error("Impossible de charger les données.")
-    st.stop()
+# ---------------- FONCTION FORMES ----------------
+def parse_forme(sequence):
+    mapping = {"v":3,"n":1,"d":0}
+    seq = [mapping.get(x.strip().lower(),0) for x in sequence.split(",")]
+    if len(seq)<5:
+        seq += [0]*(5-len(seq))
+    weights = np.array([5,4,3,2,1])
+    return np.dot(seq,weights)/15  # Normalisé 0-1
 
-# Analyse
-def analyze_league(df, league):
-    df = df.copy()
-    df["winner"] = np.where(df["result"] == "H", df["home_team"],
-                            np.where(df["result"] == "A", df["away_team"], "Draw"))
+# ---------------- INTERFACE STREAMLIT ----------------
+st.subheader("Forme récente des équipes (derniers 5 matchs)")
+for league in SPORTS.keys():
+    st.markdown(f"### {league}")
+    upcoming = get_upcoming_matches(SPORTS[league])
+    if upcoming.empty:
+        st.info("Aucun match disponible")
+        continue
 
-    # Probabilité implicite à partir des cotes
-    df["p_home"] = 1 / df["cote_home"]
-    df["p_away"] = 1 / df["cote_away"]
-    df["p_norm"] = df["p_home"] + df["p_away"]
-    df["p_home"] /= df["p_norm"]
-    df["p_away"] /= df["p_norm"]
+    # Afficher les équipes et leur forme
+    teams = set(upcoming["home_team"]).union(set(upcoming["away_team"]))
+    for team in teams:
+        current_form = teams_form[league].get(team,"v,v,v,n,d")
+        new_form = st.text_input(f"{team} (du plus récent au moins récent)", value=current_form, key=f"{league}_{team}")
+        teams_form[league][team] = new_form
 
-    # Score de fiabilité (diff. entre proba & résultat réel)
-    df["pred_correct"] = (
-        (df["p_home"] > df["p_away"]) & (df["result"] == "H")
-    ) | (
-        (df["p_home"] < df["p_away"]) & (df["result"] == "A")
-    )
+# Bouton pour sauvegarder les formes
+if st.button("Enregistrer les formes"):
+    with open(FORM_FILE,"w") as f:
+        json.dump(teams_form,f)
+    st.success("✅ Formes sauvegardées")
 
-    precision = round(df["pred_correct"].mean() * 100, 2)
-    avg_cote = round(df["cote_home"].mean(), 2)
+# ---------------- ANALYSE ----------------
+st.subheader("Analyse des matchs et mise conseillée")
+for league, sport_key in SPORTS.items():
+    st.markdown(f"### {league}")
+    df_matches = get_upcoming_matches(sport_key)
+    if df_matches.empty:
+        st.info("Aucun match disponible")
+        continue
 
-    st.markdown(f"### 📊 {league}")
-    st.write(f"Précision bookmaker (cotes vs résultats réels) : **{precision}%**")
-    st.write(f"Cote moyenne observée : **{avg_cote}**")
+    # Ajouter la forme à partir du fichier
+    df_matches["home_form"] = df_matches["home_team"].apply(lambda x: parse_forme(teams_form[league].get(x,"v,v,v,n,d")))
+    df_matches["away_form"] = df_matches["away_team"].apply(lambda x: parse_forme(teams_form[league].get(x,"v,v,n,d,d")))
 
-    # Sélection de matchs “sûrs”
-    df["écart"] = abs(df["p_home"] - df["p_away"])
-    safe_matches = df[df["écart"] > 0.25].tail(10)
+    # Score de sécurité
+    df_matches["score_securite"] = (
+        ((1/abs(df_matches["cote_home"] - df_matches["cote_away"] + 0.01))*40) +
+        ((df_matches["home_form"] - df_matches["away_form"])*100*20)
+    ).clip(0,100)
 
-    st.dataframe(safe_matches[["Date", "home_team", "away_team",
-                               "cote_home", "cote_away", "winner", "écart"]],
-                 use_container_width=True)
+    # Probabilité implicite et winner
+    df_matches["prob_home"] = np.exp(df_matches["score_securite"])/(np.exp(df_matches["score_securite"])+np.exp(100-df_matches["score_securite"]))
+    df_matches["prob_away"] = 1 - df_matches["prob_home"]
+    df_matches["Winner"] = np.where(df_matches["prob_home"]>df_matches["prob_away"], df_matches["home_team"], df_matches["away_team"])
 
-for league, df in data.items():
-    analyze_league(df, league)
+    # Classement du plus sûr au moins sûr
+    df_matches = df_matches.sort_values(by="score_securite", ascending=False)
+    st.dataframe(df_matches[["home_team","away_team","cote_home","cote_away","Winner","score_securite"]])
+
+    # Mise conseillée (Kelly simplifié)
+    budget_total = st.number_input(f"Budget total (€) pour {league}", 50, 10000, 100)
+    mises = []
+    for _, row in df_matches.iterrows():
+        cote = row["cote_home"] if row["Winner"]==row["home_team"] else row["cote_away"]
+        p = row["prob_home"] if row["Winner"]==row["home_team"] else row["prob_away"]
+        b = cote - 1
+        q = 1-p
+        f_star = max((b*p - q)/b,0)
+        mises.append(round(f_star*budget_total,2))
+    df_matches["Mise conseillée (€)"] = mises
+    st.dataframe(df_matches[["home_team","away_team","Winner","prob_home","prob_away","Mise conseillée (€)"]])
